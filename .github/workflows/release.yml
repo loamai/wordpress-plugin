@@ -1,0 +1,61 @@
+name: Release
+
+# Publishes loam-seo.zip for every new plugin version. Runs on each push to
+# main; a version that already has a release publishes nothing. The zip's top
+# folder is loam-seo/, so WordPress installs it as loam-seo/loam-seo.php.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the plugin version
+        id: version
+        run: |
+          header=$(sed -n 's/^[ *]*Version:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' loam-seo.php | head -1)
+          constant=$(sed -n "s/.*define( *'LOAMWP_VERSION', *'\([^']*\)'.*/\1/p" loam-seo.php | head -1)
+          stable=$(sed -n 's/^Stable tag:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' readme.txt | head -1)
+          if [ -z "$header" ] || [ "$header" != "$constant" ] || [ "$header" != "$stable" ]; then
+            echo "::error::The versions disagree: Version '$header', LOAMWP_VERSION '$constant', Stable tag '$stable'."
+            exit 1
+          fi
+          echo "version=$header" >> "$GITHUB_OUTPUT"
+
+      - name: Skip a version that is already released
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION is already released; nothing to publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build loam-seo.zip
+        if: steps.released.outputs.skip != 'true'
+        run: |
+          for f in *.php includes/*.php; do php -l "$f"; done
+          mkdir -p build/loam-seo
+          cp -r loam-seo.php uninstall.php readme.txt LICENSE includes build/loam-seo/
+          (cd build && zip -r ../loam-seo.zip loam-seo)
+          unzip -l loam-seo.zip
+
+      - name: Publish the release
+        if: steps.released.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" loam-seo.zip \
+            --target "$GITHUB_SHA" \
+            --title "Loam SEO $VERSION" \
+            --notes "Download loam-seo.zip, then in WordPress go to Plugins → Add New → Upload Plugin and choose the file. Loam activates it for you."
